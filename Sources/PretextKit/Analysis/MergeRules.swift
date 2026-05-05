@@ -147,6 +147,12 @@ private func isUrlSchemeSegment(_ text: String) -> Bool {
 private func isUrlLikeRunStart(_ seg: MergedSegmentation, index: Int) -> Bool {
     let text = seg.texts[index]
     if text.hasPrefix("www.") { return true }
+    if index + 1 < seg.count,
+       seg.kinds[index + 1] == .text,
+       seg.texts[index + 1].hasPrefix("://"),
+       text.unicodeScalars.allSatisfy({ $0.isASCII && ($0.properties.isAlphabetic || $0.properties.numericType == .decimal || $0 == "+" || $0 == "." || $0 == "-") }) {
+        return true
+    }
     if isUrlSchemeSegment(text),
        index + 1 < seg.count,
        seg.kinds[index + 1] == .text,

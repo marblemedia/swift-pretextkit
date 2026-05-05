@@ -16,6 +16,11 @@ let package = Package(
             name: "PretextKit",
             path: "Sources/PretextKit"
         ),
+        .executableTarget(
+            name: "PretextKitBenchmarks",
+            dependencies: ["PretextKit"],
+            path: "Benchmarks/PretextKitBenchmarks"
+        ),
         .testTarget(
             name: "PretextKitTests",
             dependencies: ["PretextKit"],

@@ -170,6 +170,56 @@ struct PretextKitTests {
         #expect(!wide.lines[0].text.contains("-"))
     }
 
+    @Test("grapheme-broken lines materialize text")
+    func graphemeBrokenLinesMaterializeText() {
+        let font = makeFont()
+        let prepared = prepareWithSegments("supercalifragilisticexpialidocious", font: font)
+        let result = layoutWithLines(prepared, maxWidth: 20, lineHeight: 20)
+
+        #expect(result.lineCount > 1)
+        #expect(result.lines.allSatisfy { !$0.text.isEmpty })
+    }
+
+    @Test("CJK split units can break after each unit")
+    func cjkUnitsBreakIndividually() {
+        let font = makeFont()
+        let prepared = prepareWithSegments("scripts 你好 hello", font: font)
+
+        let roomy = layoutWithLines(prepared, maxWidth: 80, lineHeight: 20)
+        let narrow = layoutWithLines(prepared, maxWidth: 70, lineHeight: 20)
+
+        #expect(roomy.lineCount >= 2)
+        #expect(narrow.lineCount >= roomy.lineCount)
+        #expect(narrow.lines.contains { $0.text.contains("你") })
+    }
+
+    @Test("URL-like runs stay merged as a single breakable segment")
+    func urlLikeRunsStayMerged() {
+        let font = makeFont()
+        let prepared = prepareWithSegments("see https://example.com/reports/q3?lang=ar&mode=full now", font: font)
+
+        #expect(prepared.segments == [
+            "see",
+            " ",
+            "https://example.com/reports/q3?",
+            "lang=ar&mode=full",
+            " ",
+            "now",
+        ])
+    }
+
+    @Test("hyphenated text can break after the visible hyphen segment")
+    func hyphenatedTextBreaksAfterHyphenSegment() {
+        let font = makeFont()
+        let prepared = prepareWithSegments("fixed line-height grid", font: font)
+
+        let fixedWidth = CGFloat(prepared.widths[0] + prepared.widths[1] + prepared.widths[2] + 0.1)
+        let result = layoutWithLines(prepared, maxWidth: fixedWidth, lineHeight: 20)
+
+        #expect(result.lineCount >= 2)
+        #expect(result.lines.first?.text == "fixed line-")
+    }
+
     // MARK: - Pre-Wrap Mode
 
     @Test("pre-wrap preserves hard breaks")

@@ -164,6 +164,7 @@ public func layoutNextLine(
 /// Call when fonts change dynamically or to free memory.
 public func clearCache() {
     sharedMetricsCache.clear()
+    clearAnalysisCache()
 }
 
 /// Sets the locale for word segmentation. Also clears the cache.
@@ -173,6 +174,7 @@ public func clearCache() {
 public func setLocale(_ locale: Locale?) {
     setAnalysisLocale(locale)
     sharedMetricsCache.clear()
+    clearAnalysisCache()
 }
 
 // MARK: - Internal Text Materialization
@@ -184,6 +186,15 @@ private func materializeLineText(
     line: InternalLayoutLine
 ) -> String {
     var text = ""
+
+    if line.startSegmentIndex == line.endSegmentIndex, line.endGraphemeIndex > 0 {
+        guard let segText = segments[safe: line.startSegmentIndex] else { return "" }
+        let graphemes = Array(segText)
+        let startIdx = min(line.startGraphemeIndex, graphemes.count)
+        let endIdx = min(line.endGraphemeIndex, graphemes.count)
+        guard startIdx < endIdx else { return "" }
+        return graphemes[startIdx..<endIdx].map(String.init).joined()
+    }
 
     for i in line.startSegmentIndex..<line.endSegmentIndex {
         let segText = segments[i]
@@ -207,7 +218,21 @@ private func materializeLineText(
         }
     }
 
+    if line.endGraphemeIndex > 0, let segText = segments[safe: line.endSegmentIndex] {
+        let graphemes = Array(segText)
+        let endIdx = min(line.endGraphemeIndex, graphemes.count)
+        if endIdx > 0 {
+            text += graphemes[..<endIdx].map(String.init).joined()
+        }
+    }
+
     return text
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
 }
 
 /// Walk a single line from a given start position.
@@ -225,6 +250,7 @@ private func walkSingleLine(
     var hasContent = false
     var pendingBreakIndex = -1
     var pendingBreakPaintWidth: Float = 0
+    let breakAfterFlags = core.breakAfterFlags
     let lineStart = start.segmentIndex
     let lineStartGrapheme = start.graphemeIndex
 
@@ -251,7 +277,7 @@ private func walkSingleLine(
             if kind.isSimpleCollapsibleSpace { continue }
             lineW = advance
             hasContent = true
-            if kind.canBreakAfter {
+            if breakAfterFlags[i] {
                 pendingBreakIndex = i
                 pendingBreakPaintWidth = core.lineEndPaintAdvances[i]
             }
@@ -261,12 +287,12 @@ private func walkSingleLine(
         let fitW = lineW + core.lineEndFitAdvances[i]
         if fitW <= maxWidth + lineFitEpsilon {
             lineW += advance
-            if kind.canBreakAfter {
+            if breakAfterFlags[i] {
                 pendingBreakIndex = i
                 pendingBreakPaintWidth = lineW
             }
         } else if kind.isSimpleCollapsibleSpace {
-            if kind.canBreakAfter {
+            if breakAfterFlags[i] {
                 pendingBreakIndex = i
                 pendingBreakPaintWidth = lineW
             }

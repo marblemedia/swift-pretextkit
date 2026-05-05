@@ -6,6 +6,9 @@ public enum SegmentBreakKind: UInt8, Sendable {
     /// Regular word text — not a break opportunity by itself.
     case text
 
+    /// Visible text that may break after the segment, used for split CJK units.
+    case breakableText
+
     /// Collapsible space (white-space: normal). Hangs past line edge.
     case space
 
@@ -35,7 +38,7 @@ extension SegmentBreakKind {
     /// Whether the line breaker can break after this segment.
     var canBreakAfter: Bool {
         switch self {
-        case .space, .preservedSpace, .tab, .zeroWidthBreak, .softHyphen:
+        case .breakableText, .space, .preservedSpace, .tab, .zeroWidthBreak, .softHyphen:
             return true
         case .text, .glue, .hardBreak:
             return false

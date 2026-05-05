@@ -9,6 +9,56 @@ struct TextAnalysis {
     let segmentation: MergedSegmentation
 }
 
+private struct AnalysisCacheKey: Hashable {
+    let text: String
+    let whiteSpace: WhiteSpaceMode
+    let localeIdentifier: String?
+}
+
+private final class TextAnalysisCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: [AnalysisCacheKey: TextAnalysis] = [:]
+
+    func analysis(
+        for text: String,
+        whiteSpace: WhiteSpaceMode,
+        locale: Locale?
+    ) -> TextAnalysis? {
+        let key = AnalysisCacheKey(
+            text: text,
+            whiteSpace: whiteSpace,
+            localeIdentifier: locale?.identifier
+        )
+        lock.lock()
+        defer { lock.unlock() }
+        return state[key]
+    }
+
+    func store(
+        _ analysis: TextAnalysis,
+        for text: String,
+        whiteSpace: WhiteSpaceMode,
+        locale: Locale?
+    ) {
+        let key = AnalysisCacheKey(
+            text: text,
+            whiteSpace: whiteSpace,
+            localeIdentifier: locale?.identifier
+        )
+        lock.lock()
+        state[key] = analysis
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        state.removeAll()
+        lock.unlock()
+    }
+}
+
+private let sharedAnalysisCache = TextAnalysisCache()
+
 /// Hard-break chunk boundaries within the segment array.
 struct AnalysisChunk {
     let startSegmentIndex: Int
@@ -133,7 +183,31 @@ func getAnalysisLocale() -> Locale? {
 /// classifies segments, and compiles chunk boundaries.
 func analyzeText(
     _ text: String,
-    whiteSpace: WhiteSpaceMode = .normal
+    whiteSpace: WhiteSpaceMode = .normal,
+    profiler: InternalPrepareProfiler? = nil
+) -> TextAnalysis {
+    let locale = getAnalysisLocale()
+    if let cached = sharedAnalysisCache.analysis(for: text, whiteSpace: whiteSpace, locale: locale) {
+        profiler?.analysisCacheHits += 1
+        return cached
+    }
+
+    profiler?.analysisCacheMisses += 1
+    let analysisStart = DispatchTime.now().uptimeNanoseconds
+    let analysis = analyzeTextUncached(text, whiteSpace: whiteSpace, locale: locale)
+    profiler?.analysisNs += DispatchTime.now().uptimeNanoseconds - analysisStart
+    sharedAnalysisCache.store(analysis, for: text, whiteSpace: whiteSpace, locale: locale)
+    return analysis
+}
+
+func clearAnalysisCache() {
+    sharedAnalysisCache.clear()
+}
+
+private func analyzeTextUncached(
+    _ text: String,
+    whiteSpace: WhiteSpaceMode,
+    locale: Locale?
 ) -> TextAnalysis {
     let normalized: String
     switch whiteSpace {
@@ -151,7 +225,7 @@ func analyzeText(
         )
     }
 
-    let segmentation = buildMergedSegmentation(normalized, whiteSpace: whiteSpace)
+    let segmentation = buildMergedSegmentation(normalized, whiteSpace: whiteSpace, locale: locale)
     let chunks = compileAnalysisChunks(segmentation, whiteSpace: whiteSpace)
 
     return TextAnalysis(
@@ -166,9 +240,9 @@ func analyzeText(
 /// Main segmentation pipeline: word segment → classify → merge rules.
 private func buildMergedSegmentation(
     _ normalized: String,
-    whiteSpace: WhiteSpaceMode
+    whiteSpace: WhiteSpaceMode,
+    locale: Locale?
 ) -> MergedSegmentation {
-    let locale = getAnalysisLocale()
     let wordSegments = segmentWords(normalized, locale: locale)
 
     var texts: [String] = []

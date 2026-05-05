@@ -131,6 +131,7 @@ private func countChunkLines(_ core: PreparedCore, chunk: PreparedLineChunk, max
 
     return core.widths.withUnsafeBufferPointer { widthsBuf in
         core.kinds.withUnsafeBufferPointer { kindsBuf in
+            core.breakAfterFlags.withUnsafeBufferPointer { breakBuf in
             core.lineEndFitAdvances.withUnsafeBufferPointer { fitBuf in
                 core.breakableWidths.withUnsafeBufferPointer { breakableBuf in
 
@@ -151,7 +152,7 @@ private func countChunkLines(_ core: PreparedCore, chunk: PreparedLineChunk, max
             if kind.isSimpleCollapsibleSpace { continue }
             lineW = advance
             hasContent = true
-            if kind.canBreakAfter { pendingBreakIndex = i }
+            if breakBuf[i] { pendingBreakIndex = i }
 
             if advance > maxWidth + lineFitEpsilon, let graphemeWidths = breakableBuf[i] {
                 lineCount += breakOverflowGraphemes(
@@ -166,15 +167,15 @@ private func countChunkLines(_ core: PreparedCore, chunk: PreparedLineChunk, max
         let fitW = lineW + fitBuf[i]
         if fitW <= maxWidth + lineFitEpsilon {
             lineW += advance
-            if kind.canBreakAfter { pendingBreakIndex = i }
+            if breakBuf[i] { pendingBreakIndex = i }
         } else if kind.isSimpleCollapsibleSpace {
-            if kind.canBreakAfter { pendingBreakIndex = i }
+            if breakBuf[i] { pendingBreakIndex = i }
         } else if pendingBreakIndex >= 0 {
             lineCount += 1
             lineW = advance
             hasContent = true
             pendingBreakIndex = -1
-            if kind.canBreakAfter { pendingBreakIndex = i }
+            if breakBuf[i] { pendingBreakIndex = i }
 
             if advance > maxWidth + lineFitEpsilon, let graphemeWidths = breakableBuf[i] {
                 lineCount += breakOverflowGraphemes(
@@ -201,6 +202,7 @@ private func countChunkLines(_ core: PreparedCore, chunk: PreparedLineChunk, max
     return lineCount
 
                 }
+            }
             }
         }
     }
@@ -252,6 +254,7 @@ private func walkChunkLines(
 
     core.widths.withUnsafeBufferPointer { widthsBuf in
         core.kinds.withUnsafeBufferPointer { kindsBuf in
+            core.breakAfterFlags.withUnsafeBufferPointer { breakBuf in
             core.lineEndFitAdvances.withUnsafeBufferPointer { fitBuf in
                 core.lineEndPaintAdvances.withUnsafeBufferPointer { paintBuf in
                     core.breakableWidths.withUnsafeBufferPointer { breakableBuf in
@@ -265,7 +268,7 @@ private func walkChunkLines(
     let tabStop = core.tabStopAdvance
 
     func updatePendingBreak(_ index: Int, kind: SegmentBreakKind, advance: Float) {
-        guard kind.canBreakAfter else { return }
+        guard breakBuf[index] else { return }
         let paintAdvance: Float = kind == .tab ? advance : paintBuf[index]
         pendingBreakIndex = index
         pendingBreakPaintWidth = lineW - advance + paintAdvance
@@ -339,6 +342,7 @@ private func walkChunkLines(
 
                     }
                 }
+            }
             }
         }
     }
