@@ -27,6 +27,11 @@ struct ContentView: View {
                 .tabItem {
                     Label("Scroll", systemImage: "arrow.up.arrow.down")
                 }
+
+            BenchmarkView()
+                .tabItem {
+                    Label("Bench", systemImage: "speedometer")
+                }
         }
     }
 }
