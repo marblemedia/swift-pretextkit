@@ -3,6 +3,18 @@ import CoreText
 import Foundation
 @_spi(Benchmarks) import PretextKit
 
+@main
+struct PretextKitBenchmarksMain {
+    static func main() {
+        do {
+            try PretextKitBenchmarksTool.run()
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            exit(1)
+        }
+    }
+}
+
 enum PretextKitBenchmarksTool {
     private static let selectedBenchmarks: [BenchmarkSpec] = [
         BenchmarkSpec(file: "mixed-karla-001.json", fontID: nil),
@@ -150,13 +162,6 @@ enum PretextKitBenchmarksTool {
             )
         }
     }
-}
-
-do {
-    try PretextKitBenchmarksTool.run()
-} catch {
-    FileHandle.standardError.write(Data("error: \(error)\n".utf8))
-    exit(1)
 }
 
 private struct BenchmarkConfiguration {
