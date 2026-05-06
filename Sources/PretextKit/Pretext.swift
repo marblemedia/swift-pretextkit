@@ -28,6 +28,22 @@ public func prepare(
     return PreparedText(core: result.core)
 }
 
+/// Prepare text using a caller-supplied measurement strategy.
+///
+/// This is useful for wrapper libraries that need explicit fallback selection
+/// or other deterministic measurement behavior while still reusing Pretext's
+/// analysis, prepared-core model, and line breaker.
+public func prepare(
+    _ text: String,
+    font: FontDescriptor,
+    options: PrepareOptions = PrepareOptions(),
+    measurer: any SegmentMeasuring
+) -> PreparedText {
+    let analysis = analyzeText(text, whiteSpace: options.whiteSpace)
+    let result = measureAnalysis(analysis, font: font, measurer: measurer)
+    return PreparedText(core: result.core)
+}
+
 /// Rich variant that also exposes segment text for custom rendering.
 ///
 /// Use with `layoutWithLines()`, `walkLineRanges()`, or `layoutNextLine()`.
@@ -38,6 +54,18 @@ public func prepareWithSegments(
 ) -> PreparedTextWithSegments {
     let analysis = analyzeText(text, whiteSpace: options.whiteSpace)
     let measurer = SegmentMeasurer(font: font.font)
+    let result = measureAnalysis(analysis, font: font, measurer: measurer)
+    return PreparedTextWithSegments(core: result.core, segments: result.segments)
+}
+
+/// Rich prepare variant that accepts a caller-supplied measurer.
+public func prepareWithSegments(
+    _ text: String,
+    font: FontDescriptor,
+    options: PrepareOptions = PrepareOptions(),
+    measurer: any SegmentMeasuring
+) -> PreparedTextWithSegments {
+    let analysis = analyzeText(text, whiteSpace: options.whiteSpace)
     let result = measureAnalysis(analysis, font: font, measurer: measurer)
     return PreparedTextWithSegments(core: result.core, segments: result.segments)
 }

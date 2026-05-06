@@ -10,10 +10,20 @@ final class InternalPrepareProfiler {
     var segmentLoopNs: UInt64 = 0
     var chunkBuildNs: UInt64 = 0
     var coreBuildNs: UInt64 = 0
+    var whitespaceNormalizeNs: UInt64 = 0
+    var wordSegmentationNs: UInt64 = 0
+    var breakKindMergeNs: UInt64 = 0
+    var stickyMergeNs: UInt64 = 0
+    var mergeRulesNs: UInt64 = 0
     var cacheHits: Int = 0
     var cacheMisses: Int = 0
     var widthMeasureCalls: Int = 0
     var widthMeasureNs: UInt64 = 0
+    var attributedStringUpdateNs: UInt64 = 0
+    var lineCreateNs: UInt64 = 0
+    var typographicBoundsNs: UInt64 = 0
+    var graphemeBoundaryNs: UInt64 = 0
+    var offsetMeasureNs: UInt64 = 0
     var graphemeCacheHits: Int = 0
     var graphemeCacheMisses: Int = 0
     var graphemeBatchCalls: Int = 0
@@ -31,7 +41,17 @@ final class InternalPrepareProfiler {
     public let segmentLoopMs: Double
     public let chunkBuildMs: Double
     public let coreBuildMs: Double
+    public let whitespaceNormalizeMs: Double
+    public let wordSegmentationMs: Double
+    public let breakKindMergeMs: Double
+    public let stickyMergeMs: Double
+    public let mergeRulesMs: Double
     public let widthMeasureMs: Double
+    public let attributedStringUpdateMs: Double
+    public let lineCreateMs: Double
+    public let typographicBoundsMs: Double
+    public let graphemeBoundaryMs: Double
+    public let offsetMeasureMs: Double
     public let analysisSegmentCount: Int
     public let preparedSegmentCount: Int
     public let cacheHits: Int
@@ -71,7 +91,17 @@ final class InternalPrepareProfiler {
         segmentLoopMs: nsToMs(profiler.segmentLoopNs),
         chunkBuildMs: nsToMs(profiler.chunkBuildNs),
         coreBuildMs: nsToMs(profiler.coreBuildNs),
+        whitespaceNormalizeMs: nsToMs(profiler.whitespaceNormalizeNs),
+        wordSegmentationMs: nsToMs(profiler.wordSegmentationNs),
+        breakKindMergeMs: nsToMs(profiler.breakKindMergeNs),
+        stickyMergeMs: nsToMs(profiler.stickyMergeNs),
+        mergeRulesMs: nsToMs(profiler.mergeRulesNs),
         widthMeasureMs: nsToMs(profiler.widthMeasureNs),
+        attributedStringUpdateMs: nsToMs(profiler.attributedStringUpdateNs),
+        lineCreateMs: nsToMs(profiler.lineCreateNs),
+        typographicBoundsMs: nsToMs(profiler.typographicBoundsNs),
+        graphemeBoundaryMs: nsToMs(profiler.graphemeBoundaryNs),
+        offsetMeasureMs: nsToMs(profiler.offsetMeasureNs),
         analysisSegmentCount: analysis.segmentation.count,
         preparedSegmentCount: result.segments.count,
         cacheHits: profiler.cacheHits,

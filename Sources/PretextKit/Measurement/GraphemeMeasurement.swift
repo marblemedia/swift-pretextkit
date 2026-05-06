@@ -70,13 +70,16 @@ func measureAnalysis(
     var builder = PreparedSegmentBuilder()
     builder.reserveCapacity(seg.count)
 
-    let staticMetricsStart = DispatchTime.now().uptimeNanoseconds
-    let spaceWidth = measurer.measureSpaceWidth()
-    let hyphenWidth = measurer.measureHyphenWidth()
-    let tabStopAdvance = spaceWidth * 8
-    profiler?.staticMetricsNs += DispatchTime.now().uptimeNanoseconds - staticMetricsStart
+    let staticMetricsStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
+    let needsTabStop = seg.kinds.contains(.tab)
+    let needsSoftHyphen = seg.kinds.contains(.softHyphen)
+    let tabStopAdvance = needsTabStop ? measurer.measureSpaceWidth() * 8 : 0
+    let hyphenWidth = needsSoftHyphen ? measurer.measureHyphenWidth() : 0
+    if let profiler, let staticMetricsStart {
+        profiler.staticMetricsNs += DispatchTime.now().uptimeNanoseconds - staticMetricsStart
+    }
 
-    let segmentLoopStart = DispatchTime.now().uptimeNanoseconds
+    let segmentLoopStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     for i in 0..<seg.count {
         let text = seg.texts[i]
         let kind = seg.kinds[i]
@@ -166,11 +169,13 @@ func measureAnalysis(
             }
         }
     }
-    profiler?.segmentLoopNs += DispatchTime.now().uptimeNanoseconds - segmentLoopStart
+    if let profiler, let segmentLoopStart {
+        profiler.segmentLoopNs += DispatchTime.now().uptimeNanoseconds - segmentLoopStart
+    }
 
     // CJK splitting changes segment count, so chunk boundaries must be remapped.
     let chunks: [PreparedLineChunk]
-    let chunkBuildStart = DispatchTime.now().uptimeNanoseconds
+    let chunkBuildStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     if analysis.chunks.count <= 1 {
         if builder.widths.isEmpty {
             chunks = []
@@ -184,9 +189,11 @@ func measureAnalysis(
     } else {
         chunks = remapChunksFromBuilder(builder)
     }
-    profiler?.chunkBuildNs += DispatchTime.now().uptimeNanoseconds - chunkBuildStart
+    if let profiler, let chunkBuildStart {
+        profiler.chunkBuildNs += DispatchTime.now().uptimeNanoseconds - chunkBuildStart
+    }
 
-    let coreBuildStart = DispatchTime.now().uptimeNanoseconds
+    let coreBuildStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     let core = PreparedCore(
         widths: builder.widths,
         lineEndFitAdvances: builder.lineEndFitAdvances,
@@ -199,7 +206,9 @@ func measureAnalysis(
         tabStopAdvance: tabStopAdvance,
         chunks: chunks
     )
-    profiler?.coreBuildNs += DispatchTime.now().uptimeNanoseconds - coreBuildStart
+    if let profiler, let coreBuildStart {
+        profiler.coreBuildNs += DispatchTime.now().uptimeNanoseconds - coreBuildStart
+    }
     return MeasurementResult(core: core, segments: builder.segments)
 }
 

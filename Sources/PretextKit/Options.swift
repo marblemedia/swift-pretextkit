@@ -51,7 +51,7 @@ public struct FontDescriptor: Hashable, Sendable {
         self.cacheKey = "\(name)|\(size)"
     }
 
-    init(_ font: CTFont, cacheKey: String) {
+    public init(_ font: CTFont, cacheKey: String) {
         self.font = font
         self.size = CTFontGetSize(font)
         self.cacheKey = cacheKey
