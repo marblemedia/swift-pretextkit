@@ -10,10 +10,10 @@ These cross-platform notes assume a sibling checkout layout like:
 pretext/
   web/
   ios/
-  android/
+  <shared-fixture-workspace>/
 ```
 
-So references below use `pretext/ios` and `pretext/android` as sibling repos under the same parent directory, not machine-specific absolute paths.
+So references below avoid machine-specific absolute paths. The iOS exporter can be pointed at the shared fixture workspace with `PRETEXT_FIXTURES_ROOT`.
 
 Important context:
 
@@ -31,6 +31,17 @@ If a future session needs to continue shared harness work, start from:
 The Android/web/iOS comparison work depends on harness behavior and a few core fixes that were developed together while chasing parity. If someone resumes from iOS `main` without noticing the branch split, they will get stale comparison output and may end up re-debugging already-solved issues.
 
 In practice, `daze/custom-harness` is the current source of truth for iOS fixture-export and cross-platform parity work.
+
+## Package Boundary
+
+This harness documents the iOS core fixture exporter only. It stays in `pretext/ios` because it needs:
+
+- `@testable import PretextKit`
+- UIKit/CoreText rendering APIs
+- access to low-level measurement and fallback hooks
+- PNG snapshot generation that reflects the iOS rendering path
+
+Product-specific Swift APIs should live outside this fork. If a change is about application runtime behavior rather than CoreText parity or fixture export, keep it in the downstream integration layer instead of this package.
 
 ## What Was Added On `daze/custom-harness`
 
@@ -119,18 +130,14 @@ So the policy is not “always use 8”; it is:
 - `swift test`
 - `xcodebuild test -scheme PretextKit -destination 'platform=iOS Simulator,id=<SIMULATOR_ID>' -only-testing:PretextKitTests/FixtureHarnessTests/testExportSharedFixtures`
 
-The exported JSON is consumed from the Android workspace comparison tooling, so the usual follow-up is:
+The exported JSON is consumed by the shared comparison tooling, so the usual follow-up is:
 
 - regenerate iOS fixture results
-- switch to `pretext/android`
-- run `node scripts/compare-results.mjs ios web`
-- run `mise run summarize-results`
+- run the shared comparison and summary scripts from the workspace that owns the fixture contract
 
 ## Constraint To Keep In Mind
 
-The Android workspace docs and summaries already assume the iOS fixture results came from `daze/custom-harness`.
-
-The same is now true for the iOS demo-app benchmark guidance:
+Downstream comparison docs and summaries may assume the iOS fixture results came from `daze/custom-harness`. The same is now true for the iOS demo-app benchmark guidance:
 
 - the benchmark screen
 - the parallel corpus experiments
@@ -138,9 +145,4 @@ The same is now true for the iOS demo-app benchmark guidance:
 
 all currently live on `daze/custom-harness`.
 
-If iOS branch state changes in the future, update both:
-
-- this file
-- the sibling Android repo's `project.md`
-
-so the cross-repo dependency stays explicit.
+If iOS branch state changes in the future, update this file and any downstream comparison docs that depend on this harness.

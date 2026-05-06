@@ -100,6 +100,13 @@ final class FixtureHarnessTests: XCTestCase {
                 )
             )
         }
+        let lineTexts = renderedLines.map(\.renderText)
+        let lineBreaksUtf16 = lineBreaksUtf16FromMaterializedLines(lineTexts)
+        let restoredLineTexts = try? materializePersistedUtf16Lines(
+            text: fixtureCase.text,
+            lineBreaksUtf16: lineBreaksUtf16
+        )
+        let lineBreakRoundTripMatches = restoredLineTexts.map { $0 == lineTexts } ?? false
 
         let rendered = renderSnapshot(
             lines: renderedLines,
@@ -128,6 +135,12 @@ final class FixtureHarnessTests: XCTestCase {
                 prepared: prepared,
                 layoutConfig: fixtureCase.layout,
                 lineHeight: resolvedLineHeight
+            )
+        }
+        let fastPathMs = benchmarkAverageMillis(iterations: 1_000, warmups: 10) {
+            _ = try? materializePersistedUtf16Lines(
+                text: fixtureCase.text,
+                lineBreaksUtf16: lineBreaksUtf16
             )
         }
         let renderMs = benchmarkAverageMillis(iterations: 40, warmups: 3) {
@@ -195,8 +208,9 @@ final class FixtureHarnessTests: XCTestCase {
             timings: HarnessTimingResult(
                 prepareMs: prepareMs,
                 layoutMs: layoutMs,
+                fastPathMs: fastPathMs,
                 renderMs: renderMs,
-                totalMs: prepareMs + layoutMs + renderMs
+                totalMs: prepareMs + layoutMs + fastPathMs + renderMs
             ),
             render: HarnessRenderResult(
                 contentWidth: rendered.contentWidth,
@@ -216,6 +230,8 @@ final class FixtureHarnessTests: XCTestCase {
             result: HarnessBodyResult(
                 resolvedFontFamily: loadedFont.resolvedFamily,
                 lineCount: laidOut.lineCount,
+                lineBreaksUtf16: lineBreaksUtf16,
+                lineBreakRoundTripMatches: lineBreakRoundTripMatches,
                 height: laidOut.height,
                 lines: lineResults,
                 bubble: bubble,
@@ -762,7 +778,6 @@ final class FixtureHarnessTests: XCTestCase {
 
 private struct HarnessEnvironment {
     let iosRepoRoot: URL
-    let androidRepoRoot: URL
     let fixturesURL: URL
     let casesURL: URL
     let manifestURL: URL
@@ -779,8 +794,7 @@ private struct HarnessEnvironment {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        self.androidRepoRoot = iosRepoRoot.deletingLastPathComponent().appendingPathComponent("android")
-        self.fixturesURL = androidRepoRoot.appendingPathComponent("fixtures")
+        self.fixturesURL = try HarnessEnvironment.resolveFixturesURL(iosRepoRoot: iosRepoRoot)
         self.casesURL = fixturesURL.appendingPathComponent("cases")
         self.manifestURL = casesURL.appendingPathComponent("index.json")
         self.resultsURL = fixturesURL.appendingPathComponent("results")
@@ -789,6 +803,38 @@ private struct HarnessEnvironment {
         self.iosSnapshotsURL = snapshotsURL.appendingPathComponent("ios")
         self.fontMetricsManifest = try HarnessEnvironment.loadFontMetricsManifest(from: fixturesURL)
         _ = try sharedFallbackDisplayNames()
+    }
+
+    private static func resolveFixturesURL(iosRepoRoot: URL) throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["PRETEXT_FIXTURES_ROOT"], !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
+
+        let workspaceRoot = iosRepoRoot.deletingLastPathComponent()
+        let fileManager = FileManager.default
+        let candidates = try fileManager.contentsOfDirectory(
+            at: workspaceRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        for candidate in candidates {
+            let fixturesURL = candidate.appendingPathComponent("fixtures")
+            let manifestURL = fixturesURL
+                .appendingPathComponent("cases")
+                .appendingPathComponent("index.json")
+            if fileManager.fileExists(atPath: manifestURL.path) {
+                return fixturesURL
+            }
+        }
+
+        throw NSError(
+            domain: "FixtureHarness",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Could not find shared fixtures. Set PRETEXT_FIXTURES_ROOT to the fixtures directory."
+            ]
+        )
     }
 
     func loadManifest() throws -> [HarnessManifestEntry] {
@@ -1374,6 +1420,7 @@ private struct HarnessFontDescriptorResult: Encodable {
 private struct HarnessTimingResult: Encodable {
     let prepareMs: Double
     let layoutMs: Double
+    let fastPathMs: Double
     let renderMs: Double
     let totalMs: Double
 }
@@ -1417,6 +1464,8 @@ private struct HarnessProbeResult: Encodable {
 private struct HarnessBodyResult: Encodable {
     let resolvedFontFamily: String
     let lineCount: Int
+    let lineBreaksUtf16: [Int]
+    let lineBreakRoundTripMatches: Bool
     let height: Double
     let lines: [HarnessLineResult]
     let bubble: HarnessBubbleResult
@@ -1478,9 +1527,53 @@ private struct ResolvedHarnessLayout {
     let fit: HarnessFitResult?
 }
 
+private func materializePersistedUtf16Lines(
+    text: String,
+    lineBreaksUtf16: [Int]
+) throws -> [String] {
+    guard !lineBreaksUtf16.isEmpty else { return [text] }
+    let starts = [0] + lineBreaksUtf16
+    return try starts.enumerated().map { index, start in
+        let end = starts.indices.contains(index + 1) ? starts[index + 1] : text.utf16.count
+        return try substringByUTF16Range(text, start: start, end: end)
+    }
+}
+
+private func lineBreaksUtf16FromMaterializedLines(_ lines: [String]) -> [Int] {
+    guard lines.count > 1 else { return [] }
+    return lines
+        .map { $0.utf16.count }
+        .reduce(into: [Int]()) { offsets, length in
+            offsets.append((offsets.last ?? 0) + length)
+        }
+        .dropLast()
+        .map { $0 }
+}
+
+private func substringByUTF16Range(_ text: String, start: Int, end: Int) throws -> String {
+    guard
+        let startIndex = String.Index(utf16Offset: start, in: text),
+        let endIndex = String.Index(utf16Offset: end, in: text)
+    else {
+        throw NSError(domain: "FixtureHarness", code: 4, userInfo: [
+            NSLocalizedDescriptionKey: "Invalid UTF-16 line break range \(start)..<\(end)",
+        ])
+    }
+    return String(text[startIndex..<endIndex])
+}
+
 private extension String {
     func toWhiteSpaceMode() -> WhiteSpaceMode {
         self == "pre-wrap" ? .preWrap : .normal
+    }
+}
+
+private extension String.Index {
+    init?(utf16Offset: Int, in text: String) {
+        guard utf16Offset >= 0, utf16Offset <= text.utf16.count else { return nil }
+        let utf16Index = text.utf16.index(text.utf16.startIndex, offsetBy: utf16Offset)
+        guard let index = String.Index(utf16Index, within: text) else { return nil }
+        self = index
     }
 }
 

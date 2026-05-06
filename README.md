@@ -262,6 +262,25 @@ The core algorithm is a 1:1 port from the [original TypeScript](https://github.c
 
 Not yet ported: bidi rendering metadata (`segLevels`) and URL-specific segmentation rules.
 
+## Package Boundary
+
+This package should stay focused on:
+
+- core `prepare()` / `layout()` behavior
+- CoreText measurement and segmentation fixes
+- low-level hooks that let downstream integrations supply explicit measurement behavior
+- fixture export and rendering diagnostics that require PretextKit internals
+- the `Examples/PretextDemos` app for simulator/device investigation
+
+Product-specific wrappers should live outside this package:
+
+- persisted layout models
+- UTF-16 line-break and text-attribute helpers
+- chat-bubble runtime helpers
+- release benchmark exporters and cross-platform summaries
+
+This keeps the fork easier to maintain and makes it more realistic to upstream small, generally useful improvements without carrying application-specific concepts.
+
 ## Daze Changes
 
 The active `daze/custom-harness` branch includes additional work done for Daze's cross-platform chat-bubble use case. The goal was not just to port Pretext to iOS, but to make it practical to align iOS, Android, and web on:
@@ -325,7 +344,7 @@ The current branch guidance is:
 
 - use pinned static fonts plus explicit fallback when cross-platform alignment matters
 - use fixed line height for deterministic bubble sizing
-- cache prepared text and width-specific line breaks
+- cache prepared text and width-specific line breaks in application-level code
 - do `prepare()` off the main thread
 - default to `4` workers across messages
 - consider `8` workers only for large cold distinct-message feed hydrations
