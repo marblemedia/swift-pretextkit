@@ -18,6 +18,9 @@ struct PreparedCore: @unchecked Sendable {
     /// Break classification for each segment.
     let kinds: [SegmentBreakKind]
 
+    /// Whether a line may break immediately after this segment.
+    let breakAfterFlags: [Bool]
+
     /// True if all segments are text, space, or zero-width-break —
     /// enables a stripped-down fast-path line walker.
     let simpleLineWalkFastPath: Bool

@@ -1,15 +1,5 @@
 import Foundation
 
-/// Measures per-grapheme widths within a segment for overflow-wrap breaking.
-func measureGraphemeWidths(
-    _ text: String,
-    measurer: SegmentMeasurer
-) -> ContiguousArray<Float>? {
-    let graphemeCount = text.count
-    guard graphemeCount > 1 else { return nil }
-    return measurer.measureGraphemeWidths(text)
-}
-
 // MARK: - Prepared Segment Builder
 
 /// Collects measured segments during the measurement phase, handling CJK grapheme splitting.
@@ -18,6 +8,7 @@ struct PreparedSegmentBuilder {
     var lineEndFitAdvances: [Float] = []
     var lineEndPaintAdvances: [Float] = []
     var kinds: [SegmentBreakKind] = []
+    var breakAfterFlags: [Bool] = []
     var breakableWidths: [ContiguousArray<Float>?] = []
     var segments: [String] = []
     var simpleLineWalkFastPath = true
@@ -28,6 +19,7 @@ struct PreparedSegmentBuilder {
         lineEndFitAdvances.reserveCapacity(n)
         lineEndPaintAdvances.reserveCapacity(n)
         kinds.reserveCapacity(n)
+        breakAfterFlags.reserveCapacity(n)
         breakableWidths.reserveCapacity(n)
         segments.reserveCapacity(n)
     }
@@ -44,9 +36,10 @@ struct PreparedSegmentBuilder {
         lineEndFitAdvances.append(fitAdvance)
         lineEndPaintAdvances.append(paintAdvance)
         kinds.append(kind)
+        breakAfterFlags.append(segmentBreaksAfter(text: text, kind: kind))
         breakableWidths.append(breakable)
         segments.append(text)
-        if kind != .text && kind != .space && kind != .zeroWidthBreak {
+        if kind != .text && kind != .breakableText && kind != .space && kind != .zeroWidthBreak {
             simpleLineWalkFastPath = false
         }
     }
@@ -70,16 +63,23 @@ struct MeasurementResult {
 func measureAnalysis(
     _ analysis: TextAnalysis,
     font: FontDescriptor,
-    measurer: SegmentMeasurer
+    measurer: any SegmentMeasuring,
+    profiler: InternalPrepareProfiler? = nil
 ) -> MeasurementResult {
     let seg = analysis.segmentation
     var builder = PreparedSegmentBuilder()
     builder.reserveCapacity(seg.count)
 
-    let spaceWidth = measurer.measureSpaceWidth()
-    let hyphenWidth = measurer.measureHyphenWidth()
-    let tabStopAdvance = spaceWidth * 8
+    let staticMetricsStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
+    let needsTabStop = seg.kinds.contains(.tab)
+    let needsSoftHyphen = seg.kinds.contains(.softHyphen)
+    let tabStopAdvance = needsTabStop ? measurer.measureSpaceWidth() * 8 : 0
+    let hyphenWidth = needsSoftHyphen ? measurer.measureHyphenWidth() : 0
+    if let profiler, let staticMetricsStart {
+        profiler.staticMetricsNs += DispatchTime.now().uptimeNanoseconds - staticMetricsStart
+    }
 
+    let segmentLoopStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     for i in 0..<seg.count {
         let text = seg.texts[i]
         let kind = seg.kinds[i]
@@ -96,37 +96,86 @@ func measureAnalysis(
             builder.push(text: text, width: 0, fitAdvance: 0, paintAdvance: 0, kind: kind)
 
         case .space:
-            let w = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer).width
+            let w = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer, profiler: profiler).width
             builder.push(text: text, width: w, fitAdvance: 0, paintAdvance: 0, kind: kind)
 
         case .preservedSpace:
-            let w = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer).width
+            let w = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer, profiler: profiler).width
             builder.push(text: text, width: w, fitAdvance: 0, paintAdvance: 0, kind: kind)
 
         case .glue:
-            let w = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer).width
+            let w = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer, profiler: profiler).width
             builder.push(text: text, width: w, fitAdvance: w, paintAdvance: w, kind: kind)
 
         case .zeroWidthBreak:
             builder.push(text: text, width: 0, fitAdvance: 0, paintAdvance: 0, kind: kind)
 
-        case .text:
-            let metrics = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer)
-
-            if metrics.containsCJK {
-                splitCJKIntoGraphemes(text, font: font, measurer: measurer, builder: &builder)
+        case .text, .breakableText:
+            if isWord && text.count > 1 {
+                if let cachedMetrics = sharedMetricsCache.metrics(for: text, font: font) {
+                    profiler?.cacheHits += 1
+                    if cachedMetrics.containsCJK {
+                        profiler?.cjkSplitSegments += 1
+                        splitCJKIntoGraphemes(text, font: font, measurer: measurer, builder: &builder, profiler: profiler)
+                    } else {
+                        let breakable = sharedMetricsCache.getOrMeasureGraphemeWidths(text, font: font, measurer: measurer, profiler: profiler)
+                        builder.push(
+                            text: text,
+                            width: cachedMetrics.width,
+                            fitAdvance: cachedMetrics.width,
+                            paintAdvance: cachedMetrics.width,
+                            kind: .text,
+                            breakable: breakable
+                        )
+                    }
+                } else {
+                    profiler?.cacheMisses += 1
+                    if isCJK(text) {
+                        let width = measurer.measureWidth(text)
+                        let metrics = SegmentMetrics(width: width, containsCJK: true)
+                        sharedMetricsCache.store(metrics, for: text, font: font)
+                        profiler?.cjkSplitSegments += 1
+                        splitCJKIntoGraphemes(text, font: font, measurer: measurer, builder: &builder, profiler: profiler)
+                    } else if let cachedBreakable = sharedMetricsCache.graphemeWidths(for: text, font: font) {
+                        profiler?.graphemeCacheHits += 1
+                        let width = measurer.measureWidth(text)
+                        let metrics = SegmentMetrics(width: width, containsCJK: false)
+                        sharedMetricsCache.store(metrics, for: text, font: font)
+                        builder.push(text: text, width: width, fitAdvance: width, paintAdvance: width, kind: .text, breakable: cachedBreakable)
+                    } else {
+                        profiler?.graphemeCacheMisses += 1
+                        let measured = measurer.measureSegmentAndGraphemeWidths(text)
+                        let metrics = SegmentMetrics(width: measured.width, containsCJK: false)
+                        sharedMetricsCache.store(metrics, for: text, font: font)
+                        sharedMetricsCache.storeGraphemeWidths(measured.graphemeWidths, for: text, font: font)
+                        builder.push(
+                            text: text,
+                            width: measured.width,
+                            fitAdvance: measured.width,
+                            paintAdvance: measured.width,
+                            kind: .text,
+                            breakable: measured.graphemeWidths
+                        )
+                    }
+                }
             } else {
-                let w = metrics.width
-                let breakable: ContiguousArray<Float>? = (isWord && text.count > 1)
-                    ? measureGraphemeWidths(text, measurer: measurer)
-                    : nil
-                builder.push(text: text, width: w, fitAdvance: w, paintAdvance: w, kind: .text, breakable: breakable)
+                let metrics = sharedMetricsCache.getOrMeasure(text, font: font, measurer: measurer, profiler: profiler)
+                if metrics.containsCJK {
+                    profiler?.cjkSplitSegments += 1
+                    splitCJKIntoGraphemes(text, font: font, measurer: measurer, builder: &builder, profiler: profiler)
+                } else {
+                    builder.push(text: text, width: metrics.width, fitAdvance: metrics.width, paintAdvance: metrics.width, kind: .text)
+                }
             }
         }
+    }
+    if let profiler, let segmentLoopStart {
+        profiler.segmentLoopNs += DispatchTime.now().uptimeNanoseconds - segmentLoopStart
     }
 
     // CJK splitting changes segment count, so chunk boundaries must be remapped.
     let chunks: [PreparedLineChunk]
+    let chunkBuildStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     if analysis.chunks.count <= 1 {
         if builder.widths.isEmpty {
             chunks = []
@@ -140,19 +189,33 @@ func measureAnalysis(
     } else {
         chunks = remapChunksFromBuilder(builder)
     }
+    if let profiler, let chunkBuildStart {
+        profiler.chunkBuildNs += DispatchTime.now().uptimeNanoseconds - chunkBuildStart
+    }
 
+    let coreBuildStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     let core = PreparedCore(
         widths: builder.widths,
         lineEndFitAdvances: builder.lineEndFitAdvances,
         lineEndPaintAdvances: builder.lineEndPaintAdvances,
         kinds: builder.kinds,
+        breakAfterFlags: builder.breakAfterFlags,
         simpleLineWalkFastPath: builder.simpleLineWalkFastPath,
         breakableWidths: builder.breakableWidths,
         discretionaryHyphenWidth: hyphenWidth,
         tabStopAdvance: tabStopAdvance,
         chunks: chunks
     )
+    if let profiler, let coreBuildStart {
+        profiler.coreBuildNs += DispatchTime.now().uptimeNanoseconds - coreBuildStart
+    }
     return MeasurementResult(core: core, segments: builder.segments)
+}
+
+private func segmentBreaksAfter(text: String, kind: SegmentBreakKind) -> Bool {
+    if kind.canBreakAfter { return true }
+    guard kind == .text, let last = text.unicodeScalars.last else { return false }
+    return last == "-"
 }
 
 // MARK: - CJK Grapheme Splitting
@@ -164,8 +227,9 @@ func measureAnalysis(
 private func splitCJKIntoGraphemes(
     _ text: String,
     font: FontDescriptor,
-    measurer: SegmentMeasurer,
-    builder: inout PreparedSegmentBuilder
+    measurer: any SegmentMeasuring,
+    builder: inout PreparedSegmentBuilder,
+    profiler: InternalPrepareProfiler? = nil
 ) {
     var unitText = ""
 
@@ -186,15 +250,15 @@ private func splitCJKIntoGraphemes(
             continue
         }
 
-        let w = sharedMetricsCache.getOrMeasure(unitText, font: font, measurer: measurer).width
-        builder.push(text: unitText, width: w, fitAdvance: w, paintAdvance: w, kind: .text)
+        let w = sharedMetricsCache.getOrMeasure(unitText, font: font, measurer: measurer, profiler: profiler).width
+        builder.push(text: unitText, width: w, fitAdvance: w, paintAdvance: w, kind: .breakableText)
 
         unitText = grapheme
     }
 
     if !unitText.isEmpty {
-        let w = sharedMetricsCache.getOrMeasure(unitText, font: font, measurer: measurer).width
-        builder.push(text: unitText, width: w, fitAdvance: w, paintAdvance: w, kind: .text)
+        let w = sharedMetricsCache.getOrMeasure(unitText, font: font, measurer: measurer, profiler: profiler).width
+        builder.push(text: unitText, width: w, fitAdvance: w, paintAdvance: w, kind: .breakableText)
     }
 }
 

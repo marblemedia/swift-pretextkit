@@ -9,6 +9,56 @@ struct TextAnalysis {
     let segmentation: MergedSegmentation
 }
 
+private struct AnalysisCacheKey: Hashable {
+    let text: String
+    let whiteSpace: WhiteSpaceMode
+    let localeIdentifier: String?
+}
+
+private final class TextAnalysisCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: [AnalysisCacheKey: TextAnalysis] = [:]
+
+    func analysis(
+        for text: String,
+        whiteSpace: WhiteSpaceMode,
+        locale: Locale?
+    ) -> TextAnalysis? {
+        let key = AnalysisCacheKey(
+            text: text,
+            whiteSpace: whiteSpace,
+            localeIdentifier: locale?.identifier
+        )
+        lock.lock()
+        defer { lock.unlock() }
+        return state[key]
+    }
+
+    func store(
+        _ analysis: TextAnalysis,
+        for text: String,
+        whiteSpace: WhiteSpaceMode,
+        locale: Locale?
+    ) {
+        let key = AnalysisCacheKey(
+            text: text,
+            whiteSpace: whiteSpace,
+            localeIdentifier: locale?.identifier
+        )
+        lock.lock()
+        state[key] = analysis
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        state.removeAll()
+        lock.unlock()
+    }
+}
+
+private let sharedAnalysisCache = TextAnalysisCache()
+
 /// Hard-break chunk boundaries within the segment array.
 struct AnalysisChunk {
     let startSegmentIndex: Int
@@ -133,14 +183,45 @@ func getAnalysisLocale() -> Locale? {
 /// classifies segments, and compiles chunk boundaries.
 func analyzeText(
     _ text: String,
-    whiteSpace: WhiteSpaceMode = .normal
+    whiteSpace: WhiteSpaceMode = .normal,
+    profiler: InternalPrepareProfiler? = nil
 ) -> TextAnalysis {
+    let locale = getAnalysisLocale()
+    if let cached = sharedAnalysisCache.analysis(for: text, whiteSpace: whiteSpace, locale: locale) {
+        profiler?.analysisCacheHits += 1
+        return cached
+    }
+
+    profiler?.analysisCacheMisses += 1
+    let analysisStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
+    let analysis = analyzeTextUncached(text, whiteSpace: whiteSpace, locale: locale, profiler: profiler)
+    if let profiler, let analysisStart {
+        profiler.analysisNs += DispatchTime.now().uptimeNanoseconds - analysisStart
+    }
+    sharedAnalysisCache.store(analysis, for: text, whiteSpace: whiteSpace, locale: locale)
+    return analysis
+}
+
+@_spi(Benchmarks) public func clearAnalysisCache() {
+    sharedAnalysisCache.clear()
+}
+
+private func analyzeTextUncached(
+    _ text: String,
+    whiteSpace: WhiteSpaceMode,
+    locale: Locale?,
+    profiler: InternalPrepareProfiler?
+) -> TextAnalysis {
+    let normalizeStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     let normalized: String
     switch whiteSpace {
     case .preWrap:
         normalized = normalizeWhitespacePreWrap(text)
     case .normal:
         normalized = normalizeWhitespaceNormal(text)
+    }
+    if let profiler, let normalizeStart {
+        profiler.whitespaceNormalizeNs += DispatchTime.now().uptimeNanoseconds - normalizeStart
     }
 
     guard !normalized.isEmpty else {
@@ -151,7 +232,7 @@ func analyzeText(
         )
     }
 
-    let segmentation = buildMergedSegmentation(normalized, whiteSpace: whiteSpace)
+    let segmentation = buildMergedSegmentation(normalized, whiteSpace: whiteSpace, locale: locale, profiler: profiler)
     let chunks = compileAnalysisChunks(segmentation, whiteSpace: whiteSpace)
 
     return TextAnalysis(
@@ -166,10 +247,15 @@ func analyzeText(
 /// Main segmentation pipeline: word segment → classify → merge rules.
 private func buildMergedSegmentation(
     _ normalized: String,
-    whiteSpace: WhiteSpaceMode
+    whiteSpace: WhiteSpaceMode,
+    locale: Locale?,
+    profiler: InternalPrepareProfiler?
 ) -> MergedSegmentation {
-    let locale = getAnalysisLocale()
+    let wordStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     let wordSegments = segmentWords(normalized, locale: locale)
+    if let profiler, let wordStart {
+        profiler.wordSegmentationNs += DispatchTime.now().uptimeNanoseconds - wordStart
+    }
 
     var texts: [String] = []
     var wordLikes: [Bool] = []
@@ -182,65 +268,70 @@ private func buildMergedSegmentation(
     kinds.reserveCapacity(estimatedCapacity)
     starts.reserveCapacity(estimatedCapacity)
 
-    for seg in wordSegments {
-        let pieces = splitSegmentByBreakKind(seg.text, isWordLike: seg.isWordLike, start: seg.utf16Start, whiteSpace: whiteSpace)
+    func appendPiece(_ piece: SegmentationPiece) {
+        let isText = piece.kind == .text
+        let count = texts.count
 
-        for piece in pieces {
-            let isText = piece.kind == .text
-            let count = texts.count
-
-            // CJK kinsoku-start: line-start-prohibited chars merge into preceding segment
-            if isText, count > 0, kinds[count - 1] == .text,
-               isCJKLineStartProhibitedSegment(piece.text),
-               isCJK(texts[count - 1]) {
-                texts[count - 1] += piece.text
-                wordLikes[count - 1] = wordLikes[count - 1] || piece.isWordLike
-                continue
-            }
-
-            // Myanmar medial glue: merge across boundaries
-            if isText, count > 0, kinds[count - 1] == .text,
-               endsWithMyanmarMedialGlue(texts[count - 1]) {
-                texts[count - 1] += piece.text
-                wordLikes[count - 1] = wordLikes[count - 1] || piece.isWordLike
-                continue
-            }
-
-            // Arabic no-space punctuation: Arabic text + punctuation + Arabic text
-            if isText, count > 0, kinds[count - 1] == .text,
-               piece.isWordLike,
-               containsArabicScript(piece.text),
-               endsWithArabicNoSpacePunctuation(texts[count - 1]) {
-                texts[count - 1] += piece.text
-                wordLikes[count - 1] = true
-                continue
-            }
-
-            // Repeated single-char punctuation run
-            if isText, !piece.isWordLike, count > 0, kinds[count - 1] == .text,
-               piece.text.unicodeScalars.count == 1,
-               piece.text != "-", piece.text != "—",
-               isRepeatedSingleCharRun(texts[count - 1], char: piece.text) {
-                texts[count - 1] += piece.text
-                continue
-            }
-
-            // Left-sticky punctuation: trailing ".", ",", etc. merge with preceding word
-            if isText, !piece.isWordLike, count > 0, kinds[count - 1] == .text,
-               (isLeftStickyPunctuationSegment(piece.text) || (piece.text == "-" && wordLikes[count - 1])) {
-                texts[count - 1] += piece.text
-                continue
-            }
-
-            // Default: new segment
-            texts.append(piece.text)
-            wordLikes.append(piece.isWordLike)
-            kinds.append(piece.kind)
-            starts.append(piece.start)
+        // CJK kinsoku-start: line-start-prohibited chars merge into preceding segment
+        if isText, count > 0, kinds[count - 1] == .text,
+           isCJKLineStartProhibitedSegment(piece.text),
+           isCJK(texts[count - 1]) {
+            texts[count - 1] += piece.text
+            wordLikes[count - 1] = wordLikes[count - 1] || piece.isWordLike
+            return
         }
+
+        // Myanmar medial glue: merge across boundaries
+        if isText, count > 0, kinds[count - 1] == .text,
+           endsWithMyanmarMedialGlue(texts[count - 1]) {
+            texts[count - 1] += piece.text
+            wordLikes[count - 1] = wordLikes[count - 1] || piece.isWordLike
+            return
+        }
+
+        // Arabic no-space punctuation: Arabic text + punctuation + Arabic text
+        if isText, count > 0, kinds[count - 1] == .text,
+           piece.isWordLike,
+           containsArabicScript(piece.text),
+           endsWithArabicNoSpacePunctuation(texts[count - 1]) {
+            texts[count - 1] += piece.text
+            wordLikes[count - 1] = true
+            return
+        }
+
+        // Repeated single-char punctuation run
+        if isText, !piece.isWordLike, count > 0, kinds[count - 1] == .text,
+           piece.text.unicodeScalars.count == 1,
+           piece.text != "-", piece.text != "—",
+           isRepeatedSingleCharRun(texts[count - 1], char: piece.text) {
+            texts[count - 1] += piece.text
+            return
+        }
+
+        // Left-sticky punctuation: trailing ".", ",", etc. merge with preceding word
+        if isText, !piece.isWordLike, count > 0, kinds[count - 1] == .text,
+           (isLeftStickyPunctuationSegment(piece.text) || (piece.text == "-" && wordLikes[count - 1])) {
+            texts[count - 1] += piece.text
+            return
+        }
+
+        // Default: new segment
+        texts.append(piece.text)
+        wordLikes.append(piece.isWordLike)
+        kinds.append(piece.kind)
+        starts.append(piece.start)
+    }
+
+    let breakKindStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
+    for seg in wordSegments {
+        forEachSegmentPiece(seg.text, isWordLike: seg.isWordLike, start: seg.utf16Start, whiteSpace: whiteSpace, appendPiece)
+    }
+    if let profiler, let breakKindStart {
+        profiler.breakKindMergeNs += DispatchTime.now().uptimeNanoseconds - breakKindStart
     }
 
     // Phase 2: Escaped quote attachment (backward pass)
+    let stickyStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     for i in 1..<texts.count {
         if kinds[i] == .text, !wordLikes[i],
            isEscapedQuoteClusterSegment(texts[i]),
@@ -266,8 +357,12 @@ private func buildMergedSegmentation(
 
     var seg = MergedSegmentation(texts: texts, isWordLike: wordLikes, kinds: kinds, starts: starts)
     seg.compact()
+    if let profiler, let stickyStart {
+        profiler.stickyMergeNs += DispatchTime.now().uptimeNanoseconds - stickyStart
+    }
 
     // Phase 4: Apply remaining merge rules in sequence
+    let mergeRulesStart = profiler.map { _ in DispatchTime.now().uptimeNanoseconds }
     seg = mergeGlueConnectedTextRuns(seg)
     seg = mergeUrlLikeRuns(seg)
     seg = mergeUrlQueryRuns(seg)
@@ -288,6 +383,9 @@ private func buildMergedSegmentation(
         seg.isWordLike[i] = false
         seg.texts[i + 1] = split.marks + seg.texts[i + 1]
         seg.starts[i + 1] = seg.starts[i] + split.space.utf16.count
+    }
+    if let profiler, let mergeRulesStart {
+        profiler.mergeRulesNs += DispatchTime.now().uptimeNanoseconds - mergeRulesStart
     }
 
     return seg

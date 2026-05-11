@@ -31,7 +31,7 @@ Based on [Cheng Lou's insight](https://github.com/chenglou/pretext) that text sh
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/tornikegomareli/swift-pretextkit.git", from: "0.1.0")
+.package(url: "https://github.com/marblemedia/swift-pretextkit.git", from: "0.1.0")
 ```
 
 ---
@@ -261,6 +261,111 @@ The core algorithm is a 1:1 port from the [original TypeScript](https://github.c
 | Hot path | Array indexing | `withUnsafeBufferPointer` |
 
 Not yet ported: bidi rendering metadata (`segLevels`) and URL-specific segmentation rules.
+
+## Package Boundary
+
+This package should stay focused on:
+
+- core `prepare()` / `layout()` behavior
+- CoreText measurement and segmentation fixes
+- low-level hooks that let downstream integrations supply explicit measurement behavior
+- fixture export and rendering diagnostics that require PretextKit internals
+- the `Examples/PretextDemos` app for simulator/device investigation
+
+Product-specific wrappers should live outside this package:
+
+- persisted layout models
+- UTF-16 line-break and text-attribute helpers
+- chat-bubble runtime helpers
+- release benchmark exporters and cross-platform summaries
+
+This keeps the fork easier to maintain and makes it more realistic to upstream small, generally useful improvements without carrying application-specific concepts.
+
+## Daze Changes
+
+The active `daze/custom-harness` branch includes additional work done for Daze's cross-platform chat-bubble use case. The goal was not just to port Pretext to iOS, but to make it practical to align iOS, Android, and web on:
+
+- line breaks
+- bubble geometry
+- fixed line height
+- fallback font behavior
+- benchmarkable throughput for large chat feeds
+
+The main justification for these changes is that a production chat renderer needs stronger determinism than a simple local port. We needed to answer questions like:
+
+- can the same pinned font preset wrap the same across platforms?
+- can emoji, Arabic, and CJK fallback be made predictable enough for shared bubble sizing?
+- can `prepare()` stay cheap enough for large feeds, especially when work is parallelized across messages?
+
+### Library changes made on this branch
+
+- explicit measurement hooks were added so the fixture harness can use custom fallback routing without polluting the default package behavior
+- URL-like merge behavior was broadened to better match the original web behavior and shared fixture expectations
+- trailing wrap-space and line materialization edge cases were fixed while chasing web parity
+- measurement cache identity was tightened so static and variable font assets do not collide
+- grapheme-width arrays are now cached, which materially improved warm `prepare()` performance
+- the cold path for breakable-word measurement was batched to reduce repeated CoreText work
+- text analysis results are now cacheable, which helps repeated prepares of the same messages across views/styles
+
+These changes were justified because the harness exposed real behavioral or throughput gaps:
+
+- some were correctness/parity fixes
+- some were measurement-cache bugs
+- some were straightforward performance wins with low implementation complexity
+
+### Harness and validation changes
+
+This branch also adds a full shared fixture harness for iOS export and comparison against Android/web:
+
+- shared JSON fixture export from `FixtureHarnessTests`
+- explicit fallback measurement for emoji, Arabic, CJK, and generic fallback
+- vertical metrics, metric-envelope bounds, ink bounds, and PNG snapshot export
+- width fitting in the harness for target line count or target content height using repeated cheap `layout()` calls
+- expected AppleColorEmoji vs NotoColorEmoji variance is handled explicitly in comparison tooling rather than treated as a mysterious failure
+
+This work exists because a local iOS-only test surface was not enough. The main product requirement was cross-platform determinism, so the harness became part of the implementation strategy, not just a nice-to-have test layer.
+
+### Demo-app additions
+
+The example app in `Examples/PretextDemos` was expanded on this branch with a benchmark screen that measures:
+
+- cold `prepare()`
+- warm `prepare()`
+- `layout()`
+- `layoutWithLines()`
+- corpus throughput with repeated vs unique messages
+- sequential vs parallel `prepare()` across `1 / 2 / 4 / 8` workers
+
+The justification here was practical: once the core library was "fast enough," the real question became how an app should use it. The benchmark screen makes the recommended runtime policy much easier to validate on simulator or device.
+
+### Practical takeaway
+
+The current branch guidance is:
+
+- use pinned static fonts plus explicit fallback when cross-platform alignment matters
+- use fixed line height for deterministic bubble sizing
+- cache prepared text and width-specific line breaks in application-level code
+- do `prepare()` off the main thread
+- default to `4` workers across messages
+- consider `8` workers only for large cold distinct-message feed hydrations
+
+If you are resuming the parity work documented in `fixtures/README.md`, this branch is the source of truth, not iOS `main`.
+
+## Current Integration Guidance
+
+The current cross-platform work has made two things clear:
+
+- deterministic layout is strongest with pinned static fonts plus explicit fallback control
+- real app throughput is best improved by parallelizing `prepare()` across messages, not by making the line-breaking core much more complex
+
+Practical recommendation today:
+
+- use fixed line height when cross-platform determinism matters
+- do `prepare()` off the main thread
+- use a bounded worker pool of `4` by default
+- consider `8` workers only for large cold distinct-message feed hydrations
+
+The example app in `Examples/PretextDemos` now includes a benchmark screen on the active `daze/custom-harness` branch so these tradeoffs can be measured directly on simulator or device.
 
 ---
 

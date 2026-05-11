@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - Word Segmentation via CFStringTokenizer
+// MARK: - Word Segmentation
 
 /// A single piece from word segmentation + break-kind classification.
 struct SegmentationPiece {
@@ -12,7 +12,14 @@ struct SegmentationPiece {
 
 /// Segments text into words using CFStringTokenizer, then classifies
 /// each character within segments by break kind.
-func segmentWords(_ text: String, locale: Locale?) -> [(text: String, isWordLike: Bool, utf16Start: Int)] {
+func segmentWords(
+    _ text: String,
+    locale: Locale?
+) -> [(text: String, isWordLike: Bool, utf16Start: Int)] {
+    if locale == nil {
+        return segmentWordsByUnicodeProperties(text)
+    }
+
     let cfStr = text as CFString
     let length = CFStringGetLength(cfStr)
     guard length > 0 else { return [] }
@@ -58,6 +65,59 @@ func segmentWords(_ text: String, locale: Locale?) -> [(text: String, isWordLike
     return results
 }
 
+private func segmentWordsByUnicodeProperties(
+    _ text: String
+) -> [(text: String, isWordLike: Bool, utf16Start: Int)] {
+    var results: [(text: String, isWordLike: Bool, utf16Start: Int)] = []
+    results.reserveCapacity(max(4, text.unicodeScalars.count / 2))
+
+    var current = ""
+    var currentStart = 0
+    var offset = 0
+
+    func flush() {
+        guard !current.isEmpty else { return }
+        results.append((text: current, isWordLike: true, utf16Start: currentStart))
+        current.removeAll(keepingCapacity: true)
+    }
+
+    for character in text {
+        let wordLike = isWordLikeCharacter(character)
+        if wordLike {
+            if current.isEmpty {
+                currentStart = offset
+            }
+            current.append(character)
+        } else {
+            flush()
+            results.append((text: String(character), isWordLike: false, utf16Start: offset))
+        }
+        offset += character.utf16.count
+    }
+    flush()
+
+    return results
+}
+
+private func isWordLikeCharacter(_ character: Character) -> Bool {
+    var sawWordLikeScalar = false
+    for scalar in character.unicodeScalars {
+        if isWordLikeScalar(scalar) {
+            sawWordLikeScalar = true
+            continue
+        }
+        return false
+    }
+    return sawWordLikeScalar
+}
+
+private func isWordLikeScalar(_ scalar: Unicode.Scalar) -> Bool {
+    if isCombiningMark(scalar) { return true }
+    if scalar == "_" { return true }
+    if scalar.properties.isAlphabetic { return true }
+    return scalar.properties.numericType == .decimal
+}
+
 // MARK: - Break Kind Classification
 
 /// Splits a single word segment into sub-pieces based on per-character break kind.
@@ -69,6 +129,20 @@ func splitSegmentByBreakKind(
     whiteSpace: WhiteSpaceMode
 ) -> [SegmentationPiece] {
     var pieces: [SegmentationPiece] = []
+    pieces.reserveCapacity(segment.unicodeScalars.count)
+    forEachSegmentPiece(segment, isWordLike: isWordLike, start: start, whiteSpace: whiteSpace) { piece in
+        pieces.append(piece)
+    }
+    return pieces
+}
+
+func forEachSegmentPiece(
+    _ segment: String,
+    isWordLike: Bool,
+    start: Int,
+    whiteSpace: WhiteSpaceMode,
+    _ body: (SegmentationPiece) -> Void
+) {
     var currentKind: SegmentBreakKind?
     var currentText = ""
     var currentStart = start
@@ -86,7 +160,7 @@ func splitSegmentByBreakKind(
         }
 
         if currentKind != nil {
-            pieces.append(SegmentationPiece(
+            body(SegmentationPiece(
                 text: currentText,
                 isWordLike: currentWordLike,
                 kind: currentKind!,
@@ -102,15 +176,13 @@ func splitSegmentByBreakKind(
     }
 
     if let kind = currentKind {
-        pieces.append(SegmentationPiece(
+        body(SegmentationPiece(
             text: currentText,
             isWordLike: currentWordLike,
             kind: kind,
             start: currentStart
         ))
     }
-
-    return pieces
 }
 
 /// Classify a scalar's break kind, respecting white-space mode.

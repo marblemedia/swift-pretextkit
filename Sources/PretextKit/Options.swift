@@ -10,7 +10,7 @@ import UIKit
 /// Mirrors the CSS `white-space` property behavior:
 /// - `.normal`: Collapses runs of whitespace to a single space, trims edges.
 /// - `.preWrap`: Preserves ordinary spaces, tabs, and hard breaks.
-public enum WhiteSpaceMode: Sendable {
+public enum WhiteSpaceMode: Hashable, Sendable {
     case normal
     case preWrap
 }
@@ -49,6 +49,12 @@ public struct FontDescriptor: Hashable, Sendable {
         let size = CTFontGetSize(font)
         self.size = size
         self.cacheKey = "\(name)|\(size)"
+    }
+
+    public init(_ font: CTFont, cacheKey: String) {
+        self.font = font
+        self.size = CTFontGetSize(font)
+        self.cacheKey = cacheKey
     }
 
     #if canImport(UIKit)
