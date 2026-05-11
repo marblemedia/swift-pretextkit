@@ -6,10 +6,10 @@ Pod::Spec.new do |s|
     PretextKit provides the lower-level text preparation, segmentation,
     measurement, and layout engine used by PretextChatKit.
   DESC
-  s.homepage = "https://github.com/mm-pretext/ios"
+  s.homepage = "https://github.com/marblemedia/swift-pretextkit"
   s.license = { :type => "MIT" }
   s.author = { "Pretext" => "dev@pretext.local" }
-  s.source = { :git => "https://github.com/mm-pretext/ios.git", :tag => s.version.to_s }
+  s.source = { :git => "https://github.com/marblemedia/swift-pretextkit.git", :tag => "v#{s.version}-daze-harness" }
 
   s.ios.deployment_target = "15.8"
   s.osx.deployment_target = "13.0"
